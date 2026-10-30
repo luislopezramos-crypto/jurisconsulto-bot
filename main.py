@@ -5,8 +5,8 @@ from fastapi import FastAPI, Request, Response
 app = FastAPI()
 
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "Jurisconsulto2026")
-WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")  # Token de acceso temporal de Meta
-PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")  # Identificador de número de teléfono
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")
+PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")
 
 @app.get("/")
 def read_root():
@@ -38,7 +38,6 @@ async def handle_webhook(request: Request):
             from_number = msg.get("from")
             text_body = msg.get("text", {}).get("body", "")
 
-            # Mensaje automático de prueba
             reply_text = f"Hola, recibí tu consulta: '{text_body}'. Estamos procesando la respuesta jurídica."
             send_whatsapp_message(from_number, reply_text)
 
