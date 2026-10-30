@@ -1,5 +1,6 @@
 import os
-import requests
+import json
+import urllib.request
 from fastapi import FastAPI, Request, Response
 
 app = FastAPI()
@@ -62,4 +63,15 @@ def send_whatsapp_message(to_number: str, message_text: str):
         "type": "text",
         "text": {"body": message_text}
     }
-    requests.post(url, json=payload, headers=headers)
+    
+    try:
+        req = urllib.request.Request(
+            url, 
+            data=json.dumps(payload).encode('utf-8'), 
+            headers=headers, 
+            method='POST'
+        )
+        with urllib.request.urlopen(req) as response:
+            print("Mensaje enviado con éxito:", response.read().decode('utf-8'))
+    except Exception as e:
+        print("Error al enviar mensaje por WhatsApp:", e)
