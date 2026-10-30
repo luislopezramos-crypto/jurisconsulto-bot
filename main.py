@@ -1,16 +1,19 @@
-from fastapi import FastAPI, Request, Response
 import os
+import requests
+from fastapi import FastAPI, Request, Response
 
 app = FastAPI()
 
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "Jurisconsulto2026")
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")  # Token de acceso temporal de Meta
+PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")  # Identificador de número de teléfono
 
 @app.get("/")
-def home():
-    return {"status": "ok"}
+def read_root():
+    return {"status": "ok", "message": "Jurisconsulto Bot is running"}
 
 @app.get("/webhook")
-async def verify_webhook(request: Request):
+def verify_webhook(request: Request):
     params = request.query_params
     mode = params.get("hub.mode")
     token = params.get("hub.verify_token")
@@ -21,7 +24,43 @@ async def verify_webhook(request: Request):
     return Response(content="Verification failed", status_code=403)
 
 @app.post("/webhook")
-async def receive_webhook(request: Request):
+async def handle_webhook(request: Request):
     data = await request.json()
-    print("Mensaje recibido:", data)
-    return {"status": "received"}
+    
+    try:
+        entry = data.get("entry", [])[0]
+        changes = entry.get("changes", [])[0]
+        value = changes.get("value", {})
+        messages = value.get("messages", [])
+
+        if messages:
+            msg = messages[0]
+            from_number = msg.get("from")
+            text_body = msg.get("text", {}).get("body", "")
+
+            # Mensaje automático de prueba
+            reply_text = f"Hola, recibí tu consulta: '{text_body}'. Estamos procesando la respuesta jurídica."
+            send_whatsapp_message(from_number, reply_text)
+
+    except Exception as e:
+        print("Error procesando el mensaje:", e)
+
+    return {"status": "success"}
+
+def send_whatsapp_message(to_number: str, message_text: str):
+    if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID:
+        print("Falta WHATSAPP_TOKEN o PHONE_NUMBER_ID en las variables de entorno.")
+        return
+
+    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "text",
+        "text": {"body": message_text}
+    }
+    requests.post(url, json=payload, headers=headers)
