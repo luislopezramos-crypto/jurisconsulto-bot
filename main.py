@@ -57,7 +57,7 @@ def generar_respuesta_claude(consulta_usuario: str) -> str:
             "Responde a las consultas de forma clara, profesional, precisa y bien fundamentada."
         )
         response = anthropic_client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-5-5-haiku-20241022",
             max_tokens=800,
             system=prompt_sistema,
             messages=[
@@ -67,7 +67,20 @@ def generar_respuesta_claude(consulta_usuario: str) -> str:
         return response.content[0].text
     except Exception as e:
         print(f"Error detallado de Anthropic: {type(e).__name__} - {str(e)}")
-        return "Disculpa, ocurrió un error al procesar tu consulta jurídica. Por favor intenta de nuevo."
+        # Fallback a Sonnet 5.5 en caso de ajuste de alias en consola
+        try:
+            response = anthropic_client.messages.create(
+                model="claude-5-5-sonnet-20241022",
+                max_tokens=800,
+                system=prompt_sistema,
+                messages=[
+                    {"role": "user", "content": consulta_usuario}
+                ]
+            )
+            return response.content[0].text
+        except Exception as fallback_err:
+            print(f"Error en fallback: {fallback_err}")
+            return "Disculpa, ocurrió un error al procesar tu consulta jurídica. Por favor intenta de nuevo."
 
 def enviar_whatsapp(to_number: str, message_text: str):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
