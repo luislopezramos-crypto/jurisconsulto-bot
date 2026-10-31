@@ -43,32 +43,21 @@ async def webhook(request: Request):
     return Response(content="OK", status_code=200)
 
 def generar_respuesta_claude(consulta_usuario: str) -> str:
-    # Intentamos primero con el alias oficial de Haiku 3
-    modelos_a_probar = [
-        "claude-3-haiku-20240307",
-        "claude-3-sonnet-20240229",
-        "claude-3-5-sonnet-20240620"
-    ]
-    
-    prompt_sistema = (
-        "Eres un consultor jurídico experto en derecho constitucional y parlamentario guatemalteco. "
-        "Responde a las consultas de forma clara, profesional, precisa y bien fundamentada."
-    )
-    
-    for mod in modelos_a_probar:
-        try:
-            response = anthropic_client.messages.create(
-                model=mod,
-                max_tokens=800,
-                system=prompt_sistema,
-                messages=[{"role": "user", "content": consulta_usuario}]
-            )
-            print(f" Exitoso con modelo: {mod}")
-            return response.content[0].text
-        except Exception as e:
-            print(f" Falló modelo {mod}: {e}")
-            
-    return "Disculpa, ocurrió un error al procesar tu consulta jurídica. Por favor intenta de nuevo."
+    try:
+        prompt_sistema = (
+            "Eres un consultor jurídico experto en derecho constitucional y parlamentario guatemalteco. "
+            "Responde a las consultas de forma clara, profesional, precisa y bien fundamentada."
+        )
+        response = anthropic_client.messages.create(
+            model="claude-3-haiku-20240307",
+            max_tokens=800,
+            system=prompt_sistema,
+            messages=[{"role": "user", "content": consulta_usuario}]
+        )
+        return response.content[0].text
+    except Exception as e:
+        print(f"Error detallado de Anthropic: {type(e).__name__} - {str(e)}")
+        return "Disculpa, ocurrió un error al procesar tu consulta jurídica. Por favor intenta de nuevo."
 
 def enviar_whatsapp(to_number: str, message_text: str):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
