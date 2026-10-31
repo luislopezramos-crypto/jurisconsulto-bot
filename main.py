@@ -36,7 +36,7 @@ async def webhook(request: Request):
             text_body = msg.get("text", {}).get("body", "")
             
             if text_body:
-                # 1. Generar respuesta con Claude Haiku
+                # 1. Generar respuesta con Claude
                 ai_response = generar_respuesta_claude(text_body)
                 
                 # 2. Enviar respuesta a WhatsApp
