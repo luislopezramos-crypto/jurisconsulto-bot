@@ -80,3 +80,4 @@ def enviar_whatsapp(to_number: str, message_text: str):
         "text": {"body": message_text}
     }
     requests.post(url, json=payload, headers=headers)
+
