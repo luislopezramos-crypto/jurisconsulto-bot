@@ -54,7 +54,7 @@ def generar_respuesta_claude(consulta_usuario: str) -> str:
             "Responde a las consultas de forma clara, profesional, precisa y bien fundamentada."
         )
         response = anthropic_client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-3-haiku-20240307",
             max_tokens=800,
             system=prompt_sistema,
             messages=[
@@ -64,7 +64,7 @@ def generar_respuesta_claude(consulta_usuario: str) -> str:
         return response.content[0].text
     except Exception as e:
         # Imprime la excepción exacta en los logs de Render para depuración
-        print(f"Error detallado de Anthropic: {type(e).__name__} - {str(e)}")
+        print(f"Error al llamar a Claude: {e}")
         return "Disculpa, ocurrió un error al procesar tu consulta jurídica. Por favor intenta de nuevo."
 
 def enviar_whatsapp(to_number: str, message_text: str):
