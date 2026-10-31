@@ -36,7 +36,7 @@ async def webhook(request: Request):
             text_body = msg.get("text", {}).get("body", "")
             
             if text_body:
-                # 1. Generar respuesta con Claude
+                # 1. Generar respuesta con Claude Haiku
                 ai_response = generar_respuesta_claude(text_body)
                 
                 # 2. Enviar respuesta a WhatsApp
@@ -63,8 +63,7 @@ def generar_respuesta_claude(consulta_usuario: str) -> str:
         )
         return response.content[0].text
     except Exception as e:
-        # Imprime la excepción exacta en los logs de Render para depuración
-        print(f"Error al llamar a Claude: {e}")
+        print(f"Error detallado de Anthropic: {type(e).__name__} - {str(e)}")
         return "Disculpa, ocurrió un error al procesar tu consulta jurídica. Por favor intenta de nuevo."
 
 def enviar_whatsapp(to_number: str, message_text: str):
