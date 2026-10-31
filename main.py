@@ -11,10 +11,9 @@ PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "mi_token_de_verificacion")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-# Inicialización adaptada para Service Accounts (sk-ant-svc-...)
+# Inicialización con soporte para claves de Service Account (sk-ant-svc-...)
 anthropic_client = Anthropic(
-    api_key=ANTHROPIC_API_KEY,
-    default_headers={"anthropic-beta": "prompt-caching-2024-07-31"}
+    api_key=ANTHROPIC_API_KEY
 )
 
 @app.get("/webhook")
@@ -40,7 +39,7 @@ async def webhook(request: Request):
             text_body = msg.get("text", {}).get("body", "")
             
             if text_body:
-                # 1. Generar respuesta con Claude
+                # 1. Generar respuesta con Claude 3.5 Sonnet
                 ai_response = generar_respuesta_claude(text_body)
                 
                 # 2. Enviar respuesta a WhatsApp
