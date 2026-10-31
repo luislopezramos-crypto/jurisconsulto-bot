@@ -11,7 +11,11 @@ PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "mi_token_de_verificacion")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
+# Inicialización adaptada para Service Accounts (sk-ant-svc-...)
+anthropic_client = Anthropic(
+    api_key=ANTHROPIC_API_KEY,
+    default_headers={"anthropic-beta": "prompt-caching-2024-07-31"}
+)
 
 @app.get("/webhook")
 async def verify_webhook(request: Request):
@@ -54,7 +58,7 @@ def generar_respuesta_claude(consulta_usuario: str) -> str:
             "Responde a las consultas de forma clara, profesional, precisa y bien fundamentada."
         )
         response = anthropic_client.messages.create(
-            model="claude-3-haiku-20240307",
+            model="claude-3-5-sonnet-20241022",
             max_tokens=800,
             system=prompt_sistema,
             messages=[
