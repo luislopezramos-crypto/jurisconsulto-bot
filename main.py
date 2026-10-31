@@ -11,9 +11,14 @@ PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "mi_token_de_verificacion")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-# Inicialización con soporte para claves de Service Account (sk-ant-svc-...)
+# ID de workspace explícito para claves de servicio (sk-ant-svc-...)
+WORKSPACE_ID = os.getenv("ANTHROPIC_WORKSPACE_ID", "wrkspc_01JBG5tqFvFV4JHzDRkfhMUa")
+
 anthropic_client = Anthropic(
-    api_key=ANTHROPIC_API_KEY
+    api_key=ANTHROPIC_API_KEY,
+    default_headers={
+        "anthropic-workspace-id": WORKSPACE_ID
+    }
 )
 
 @app.get("/webhook")
@@ -39,7 +44,7 @@ async def webhook(request: Request):
             text_body = msg.get("text", {}).get("body", "")
             
             if text_body:
-                # 1. Generar respuesta con Claude 3.5 Sonnet
+                # 1. Generar respuesta con Claude
                 ai_response = generar_respuesta_claude(text_body)
                 
                 # 2. Enviar respuesta a WhatsApp
@@ -57,7 +62,7 @@ def generar_respuesta_claude(consulta_usuario: str) -> str:
             "Responde a las consultas de forma clara, profesional, precisa y bien fundamentada."
         )
         response = anthropic_client.messages.create(
-            model="claude-5-5-haiku-20241022",
+            model="claude-3-5-sonnet-20241022",
             max_tokens=800,
             system=prompt_sistema,
             messages=[
@@ -67,20 +72,7 @@ def generar_respuesta_claude(consulta_usuario: str) -> str:
         return response.content[0].text
     except Exception as e:
         print(f"Error detallado de Anthropic: {type(e).__name__} - {str(e)}")
-        # Fallback a Sonnet 5.5 en caso de ajuste de alias en consola
-        try:
-            response = anthropic_client.messages.create(
-                model="claude-5-5-sonnet-20241022",
-                max_tokens=800,
-                system=prompt_sistema,
-                messages=[
-                    {"role": "user", "content": consulta_usuario}
-                ]
-            )
-            return response.content[0].text
-        except Exception as fallback_err:
-            print(f"Error en fallback: {fallback_err}")
-            return "Disculpa, ocurrió un error al procesar tu consulta jurídica. Por favor intenta de nuevo."
+        return "Disculpa, ocurrió un error al procesar tu consulta jurídica. Por favor intenta de nuevo."
 
 def enviar_whatsapp(to_number: str, message_text: str):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
