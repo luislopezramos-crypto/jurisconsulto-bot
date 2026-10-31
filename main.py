@@ -5,19 +5,17 @@ from anthropic import Anthropic
 
 app = FastAPI()
 
-# Configuración de variables de entorno
+# Variables de entorno
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "mi_token_de_verificacion")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-# ID de workspace explícito para claves de servicio (sk-ant-svc-...)
-WORKSPACE_ID = os.getenv("ANTHROPIC_WORKSPACE_ID", "wrkspc_01JBG5tqFvFV4JHzDRkfhMUa")
-
+# Inicialización configurada para claves sk-ant-usr-...
 anthropic_client = Anthropic(
     api_key=ANTHROPIC_API_KEY,
     default_headers={
-        "anthropic-workspace-id": WORKSPACE_ID
+        "anthropic-version": "2023-06-01"
     }
 )
 
