@@ -1,17 +1,16 @@
 import os
 import requests
 from fastapi import FastAPI, Request, Response
-from anthropic import Anthropic
+from openai import OpenAI
 
 app = FastAPI()
 
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "mi_token_de_verificacion")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Inicialización estándar limpia
-anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 @app.get("/webhook")
 async def verify_webhook(request: Request):
@@ -35,28 +34,30 @@ async def webhook(request: Request):
             text_body = msg.get("text", {}).get("body", "")
             
             if text_body:
-                ai_response = generar_respuesta_claude(text_body)
+                ai_response = generar_respuesta_openai(text_body)
                 enviar_whatsapp(from_number, ai_response)
     except Exception as e:
         print(f"Error procesando webhook: {e}")
         
     return Response(content="OK", status_code=200)
 
-def generar_respuesta_claude(consulta_usuario: str) -> str:
+def generar_respuesta_openai(consulta_usuario: str) -> str:
     try:
         prompt_sistema = (
             "Eres un consultor jurídico experto en derecho constitucional y parlamentario guatemalteco. "
             "Responde a las consultas de forma clara, profesional, precisa y bien fundamentada."
         )
-        response = anthropic_client.messages.create(
-            model="claude-3-haiku-20240307",
-            max_tokens=800,
-            system=prompt_sistema,
-            messages=[{"role": "user", "content": consulta_usuario}]
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": prompt_sistema},
+                {"role": "user", "content": consulta_usuario}
+            ],
+            max_tokens=800
         )
-        return response.content[0].text
+        return response.choices[0].message.content
     except Exception as e:
-        print(f"Error detallado de Anthropic: {type(e).__name__} - {str(e)}")
+        print(f"Error detallado de OpenAI: {type(e).__name__} - {str(e)}")
         return "Disculpa, ocurrió un error al procesar tu consulta jurídica. Por favor intenta de nuevo."
 
 def enviar_whatsapp(to_number: str, message_text: str):
