@@ -9,7 +9,6 @@ from reportlab.pdfgen import canvas
 
 app = FastAPI()
 
-# Variables de entorno
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "mi_token_de_verificacion")
@@ -23,7 +22,7 @@ class WatermarkCanvas(canvas.Canvas):
     def showPage(self):
         self.saveState()
         self.setFont("Helvetica-Bold", 24)
-        self.setFillColorRGB(0.5, 0.5, 0.5, alpha=0.55)  # Intensidad y visibilidad reforzada
+        self.setFillColorRGB(0.5, 0.5, 0.5, alpha=0.55)
         self.translate(300, 400)
         self.rotate(45)
         self.drawCentredString(0, 0, "Consulta respondida por Jurisconsultor")
@@ -52,7 +51,6 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             text_body = msg.get("text", {}).get("body", "")
             
             if text_body:
-                # Responde 200 OK inmediatamente a WhatsApp para detener los reintentos repetidos
                 background_tasks.add_task(procesar_y_enviar, from_number, text_body)
     except Exception as e:
         print(f"Error procesando webhook: {e}")
@@ -72,34 +70,29 @@ def procesar_y_enviar(to_number: str, consulta_usuario: str):
             enviar_whatsapp_texto(
                 to_number, 
                 "📄 Adjunto encontrarás el informe jurídico completo en formato PDF con el análisis detallado.\n\n"
-                "💡 *¿Te gustaría que profundice en la jurisprudencia aplicable o que elabore un modelo/plantilla relacionado a este tema?*"
+                "💡 *¿Sobre cuál de estos puntos te gustaría profundizar en una nueva consulta?*"
             )
         else:
             enviar_whatsapp_texto(to_number, respuesta_texto[:4000])
 
 def generar_respuesta_fundamentada(consulta_usuario: str) -> str:
     try:
-        # SYSTEM PROMPT DE RIGOR JURÍDICO (Fijado estrictamente según tus parámetros)
+        # Prompt con Rigor Jurídico + Desglose de preguntas compuestas
         prompt_sistema = (
             "Eres el asistente de Jurisconsultor, experto en derecho constitucional y parlamentario de Guatemala.\n\n"
-            "REGLAS ESTRUCTURALES Y DE RIGOR JURÍDICO:\n"
-            "1. FUNDAMENTACIÓN OBLIGATORIA: Toda afirmación debe citar explícitamente el artículo, cuerpo legal "
-            "(CPRG, LOOL Decreto 63-94) y/o expediente/sentencia exacto de la Corte de Constitucionalidad.\n"
-            "2. CLÁUSULA DE ABSTENCIÓN: Si la consulta no puede responderse directamente con la normativa o criterios "
-            "constitucionales aplicables, el sistema NO DEBE ASUMIR NI ESPECULAR; debe indicar explícitamente: "
+            "REGLAS ESTRUCTURALES Y DE NEGOCIO:\n"
+            "1. CONSULTAS MÚLTIPLES O COMPUESTAS: Si la pregunta del usuario contiene 2 o más sub-preguntas "
+            "(ej. qué son, cuál es el trámite y qué pasa si se aprueban), NO las respondas todas de una vez. "
+            "Desglosa los temas en una lista numerada (1, 2, 3...) y pídele al usuario que elija cuál número desea responder primero.\n"
+            "2. FUNDAMENTACIÓN OBLIGATORIA: Cita siempre artículos de la CPRG, LOOL (Decreto 63-94) o expedientes de la CC.\n"
+            "3. CLÁUSULA DE ABSTENCIÓN: Si no hay normativa o jurisprudencia aplicable, indica explícitamente: "
             "\"La normativa analizada no contiene disposición específica sobre el punto...\".\n"
-            "3. AUDIENCIA EXPERTA: Omite explicaciones básicas del trámite legislativo ordinario (como que las iniciativas "
-            "se presentan o pasan a comisión). Centra el análisis estrictamente en el fondo sustantivo de la duda.\n"
-            "4. ESTRUCTURA FORENSE / TÉCNICA: Organiza la respuesta con Tesis del asunto, Análisis normativo aplicable, "
-            "Conclusión y Fuentes consultadas.\n"
-            "5. CIERRE INTERACTIVO: Concluye SIEMPRE proponiendo 1 o 2 preguntas de seguimiento o modelos prácticos para que el "
-            "usuario continúe iterando en el chat."
+            "4. AUDIENCIA EXPERTA: Omite explicaciones procedimentales básicas.\n"
+            "5. CIERRE INTERACTIVO: En respuestas individuales, concluye sugiriendo la siguiente sub-pregunta o tema a consultar."
         )
 
-        # Se fija la temperatura en 0.1 para ceñir al modelo a la normativa sin especular
         response = anthropic_client.messages.create(
             model="claude-sonnet-4-6",
-            temperature=0.1,
             max_tokens=1800,
             system=prompt_sistema,
             messages=[{"role": "user", "content": consulta_usuario}]
