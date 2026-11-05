@@ -3,3 +3,5 @@ uvicorn
 requests
 anthropic
 reportlab
+google-cloud-discoveryengine
+google-auth
