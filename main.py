@@ -70,25 +70,25 @@ def procesar_y_enviar(to_number: str, consulta_usuario: str):
             enviar_whatsapp_texto(
                 to_number, 
                 "📄 Adjunto encontrarás el informe jurídico completo en formato PDF con el análisis detallado.\n\n"
-                "💡 *¿Sobre cuál de estos puntos te gustaría profundizar en una nueva consulta?*"
+                "💡 *Para consultar los puntos restantes, escribe el nombre o frase del tema que deseas resolver a continuación.*"
             )
         else:
             enviar_whatsapp_texto(to_number, respuesta_texto[:4000])
 
 def generar_respuesta_fundamentada(consulta_usuario: str) -> str:
     try:
-        # Prompt con Rigor Jurídico + Desglose de preguntas compuestas
         prompt_sistema = (
             "Eres el asistente de Jurisconsultor, experto en derecho constitucional y parlamentario de Guatemala.\n\n"
             "REGLAS ESTRUCTURALES Y DE NEGOCIO:\n"
-            "1. CONSULTAS MÚLTIPLES O COMPUESTAS: Si la pregunta del usuario contiene 2 o más sub-preguntas "
-            "(ej. qué son, cuál es el trámite y qué pasa si se aprueban), NO las respondas todas de una vez. "
-            "Desglosa los temas en una lista numerada (1, 2, 3...) y pídele al usuario que elija cuál número desea responder primero.\n"
-            "2. FUNDAMENTACIÓN OBLIGATORIA: Cita siempre artículos de la CPRG, LOOL (Decreto 63-94) o expedientes de la CC.\n"
-            "3. CLÁUSULA DE ABSTENCIÓN: Si no hay normativa o jurisprudencia aplicable, indica explícitamente: "
+            "1. CONSULTAS MÚLTIPLES: Si la pregunta del usuario abarca 2 o más aspectos (ej: qué son, cuál es el trámite, efectos), "
+            "RESPONDE DE INMEDIATO EL PRIMER ASPECTO con rigor sustantivo (citando artículos de la CPRG, LOOL Decreto 63-94 o sentencias de la CC).\n"
+            "2. CIERRE CLARO Y CONCRETO: Al finalizar la respuesta del primer punto, enumera los sub-temas restantes e instruye explícitamente al usuario "
+            "escribir el nombre o frase del tema que desea consultar (ejemplo: \"Para responder el siguiente punto, por favor escribe 'Trámite de presentación' o 'Efectos de la aprobación'\").\n"
+            "3. NÚMEROS SUELTOS O RESPUESTAS BREVES: Si el usuario envía un número o palabra clave breve, ofrece el menú de temas específicos "
+            "y pídele que escriba la frase completa del asunto a tratar.\n"
+            "4. CLÁUSULA DE ABSTENCIÓN: Si no hay normativa o jurisprudencia aplicable, indica explícitamente: "
             "\"La normativa analizada no contiene disposición específica sobre el punto...\".\n"
-            "4. AUDIENCIA EXPERTA: Omite explicaciones procedimentales básicas.\n"
-            "5. CIERRE INTERACTIVO: En respuestas individuales, concluye sugiriendo la siguiente sub-pregunta o tema a consultar."
+            "5. AUDIENCIA EXPERTA: Omite explicaciones de trámite legislativo básico."
         )
 
         response = anthropic_client.messages.create(
