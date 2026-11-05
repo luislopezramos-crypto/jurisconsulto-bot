@@ -26,7 +26,6 @@ GCP_CREDS_JSON = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
 MAX_WHATSAPP_CHARS = 1400
 
-# Inicialización de credenciales de Google Cloud
 def obtener_cliente_busqueda():
     if GCP_CREDS_JSON:
         creds_dict = json.loads(GCP_CREDS_JSON)
@@ -108,10 +107,10 @@ def procesar_y_enviar(to_number: str, consulta_usuario: str):
     # 1. Recuperar contexto legal dinámico de Google Drive / GCP
     contexto_legal = consultar_base_legal_gcp(consulta_usuario)
     
-    # 2. Generar respuesta fundamentada con Claude
+    # 2. Generar respuesta fundamentada con Claude (Temperatura 0.0)
     respuesta_texto = generar_respuesta_fundamentada(consulta_usuario, contexto_legal)
     
-    # 3. Enviar por WhatsApp (Texto o PDF según extensión)
+    # 3. Enviar por WhatsApp
     if len(respuesta_texto) <= MAX_WHATSAPP_CHARS:
         enviar_whatsapp_texto(to_number, respuesta_texto)
     else:
@@ -129,20 +128,26 @@ def procesar_y_enviar(to_number: str, consulta_usuario: str):
 
 def generar_respuesta_fundamentada(consulta_usuario: str, contexto_legal: str) -> str:
     try:
+        if not contexto_legal.strip():
+            return (
+                "La base de datos legal no devolvió fragmentos específicos para esta consulta. "
+                "Por favor verifica que la normativa esté correctamente subida e indexada en la carpeta de Google Drive."
+            )
+
         prompt_sistema = (
             "Eres el asistente de Jurisconsultor, experto en derecho constitucional y parlamentario de Guatemala.\n\n"
-            "INSTRUCCIONES DE BASE DE CONOCIMIENTO (RAG):\n"
-            "1. Utiliza PRIMORDALMENTE el siguiente contexto extraído de la base legal oficial para responder la consulta.\n"
-            "2. Fundamenta tus respuestas con rigor técnico en los artículos y precedentes citados en el contexto.\n"
-            "3. FORMATO DE TEXTO: NO utilices tablas escritas en formato Markdown (con caracteres '|'). Usa viñetas claras.\n"
-            "4. CONSULTAS MÚLTIPLES: Si la pregunta abarca varios puntos, responde de inmediato el Primer Punto. Al final, enumera los temas pendientes e instruye al usuario a escribir la frase o título exacto del tema que desea consultar a continuación.\n"
-            "5. CLÁUSULA DE ABSTENCIÓN: Si el contexto proporcionado no contiene la solución ni existe base legal clara, indica: \"La normativa analizada no contiene disposición específica sobre el punto...\".\n\n"
-            f"--- CONTEXTO LEGAL RECUPERADO ---\n{contexto_legal if contexto_legal else 'No se recuperaron fragmentos directos.'}\n---------------------------------"
+            "REGLAS STRICTAS DE RESPUESTA (RIGOR JURÍDICO Y TEMPERATURA 0):\n"
+            "1. Responde ÚNICAMENTE fundamentándote en el texto extraído de la base legal oficial provista a continuación.\n"
+            "2. Queda ESTRICTAMENTE PROHIBIDO asumir, inventar o confundir las objeciones de los diputados (Art. 125 LOOL) con el veto presidencial (Art. 178 CPRG) salvo que el texto adjunto lo establezca explícitamente.\n"
+            "3. NO utilices tablas escritas en formato Markdown (con caracteres '|'). Utiliza únicamente viñetas y listas estructuradas.\n"
+            "4. Si la consulta abarca varios puntos, responde de inmediato el Primer Punto con el máximo rigor técnico. Al final, enumera los temas pendientes e indica la frase exacta que debe escribir el usuario para resolverlos.\n\n"
+            f"--- FUENTE NORMATIVA Y JURISPRUDENCIAL RECUPERADA (DRIVE) ---\n{contexto_legal}\n--------------------------------------------------------------"
         )
 
         response = anthropic_client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1800,
+            temperature=0.0,  # <-- TEMPERATURA 0.0: Cero creatividad, respuestas deterministas y exactas
             system=prompt_sistema,
             messages=[{"role": "user", "content": consulta_usuario}]
         )
