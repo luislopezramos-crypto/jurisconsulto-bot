@@ -2,7 +2,6 @@ import os
 import requests
 from fastapi import FastAPI, Request, Response
 from anthropic import Anthropic
-from google.genai import client
 
 app = FastAPI()
 
@@ -12,11 +11,8 @@ PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "mi_token_de_verificacion")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-# Inicialización de cliente Anthropic
+# Inicialización del cliente oficial de Anthropic
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
-
-# ID de tu cuaderno de trabajo sobre temas parlamentarios
-NOTEBOOK_ID = "notebooks/a8e97b09-299f-443e-bc41-56abf9779730"
 
 @app.get("/webhook")
 async def verify_webhook(request: Request):
@@ -49,33 +45,16 @@ async def webhook(request: Request):
 
 def generar_respuesta_fundamentada(consulta_usuario: str) -> str:
     try:
-        # 1. Recuperar los textos normativos y doctrinales del cuaderno de NotebookLM
-        chunks_response = client.notebooklm.retrieve_relevant_chunks(
-            name=NOTEBOOK_ID,
-            query=consulta_usuario
-        )
-        
-        textos_recuperados = ""
-        if hasattr(chunks_response, 'source_contexts'):
-            for source in chunks_response.source_contexts:
-                for chunk in source.chunks:
-                    textos_recuperados += chunk.content.pieces[0].text + "\n\n"
-
-        if not textos_recuperados.strip():
-            return "Disculpa, no encontré información sobre este tema en las fuentes del cuaderno."
-
-        # 2. Prompt con el estilo directo y profesional de un consultor
         prompt_sistema = (
-            "Eres un consultor experto en derecho constitucional y parlamentario guatemalteco. "
-            "Responde a la consulta del usuario de forma clara, directa, profesional y conversacional (sin formato de dictamen formal).\n\n"
-            "REGLAS OBLIGATORIAS:\n"
-            "1. Basa tu respuesta ESTRICTAMENTE en las leyes, artículos y jurisprudencia de la CC provistos en el texto de referencia adjunto.\n"
-            "2. Fundamenta siempre citando explícitamente los artículos, leyes o expedientes de la CC mencionados en el texto.\n"
-            "3. Mantén un tono de respuesta directo y natural para un chat de WhatsApp.\n\n"
-            f"TEXTO DE REFERENCIA DEL CUADERNO:\n{textos_recuperados}"
+            "Eres un consultor experto en derecho constitucional y parlamentario guatemalteco.\n\n"
+            "INSTRUCCIONES DE RESPUESTA:\n"
+            "1. Responde a las dudas del usuario con claridad, precisión y de forma directa (formato natural para WhatsApp).\n"
+            "2. Fundamenta SIEMPRE citando explícitamente los artículos de la Constitución Política de la República de Guatemala (CPRG), "
+            "la Ley Orgánica del Organismo Legislativo (LOOL - Decreto 63-94) y los criterios/expedientes de la Corte de Constitucionalidad (CC).\n"
+            "3. Cuando te pregunten sobre la creación, reforma o supresión de entidades descentralizadas o autónomas, fundamenta explícitamente "
+            "con el artículo 134 de la CPRG (requisitos, voto favorable de las dos terceras partes del total de diputados) y los artículos de la LOOL aplicables."
         )
 
-        # 3. Generar la respuesta utilizando el modelo activo
         response = anthropic_client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1200,
@@ -87,7 +66,7 @@ def generar_respuesta_fundamentada(consulta_usuario: str) -> str:
 
     except Exception as e:
         print(f"Error al generar la respuesta: {e}")
-        return "Ocurrió un error al procesar la consulta con el cuaderno. Por favor intenta de nuevo."
+        return "Disculpa, ocurrió un inconveniente al procesar tu consulta. Por favor intenta de nuevo."
 
 def enviar_whatsapp(to_number: str, message_text: str):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
