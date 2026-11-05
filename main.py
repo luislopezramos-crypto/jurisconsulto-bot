@@ -16,22 +16,17 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "mi_token_de_verificacion")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
-NOTEBOOK_ID = "notebooks/a8e97b09-299f-443e-bc41-56abf9779730"
-
-# Límite cómodo de caracteres para un mensaje directo de WhatsApp
-MAX_WHATSAPP_CHARS = 1500
+MAX_WHATSAPP_CHARS = 1400
 
 class WatermarkCanvas(canvas.Canvas):
-    """Clase para dibujar la marca de agua en cada página del PDF"""
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
+    """Marca de agua visible y centrada en cada página del PDF"""
     def showPage(self):
         self.saveState()
         self.setFont("Helvetica-Bold", 24)
-        self.setFillColorRGB(0.8, 0.8, 0.8, alpha=0.3)  # Gris claro translúcido
+        self.setFillColorRGB(0.5, 0.5, 0.5, alpha=0.55)  # Intensidad y visibilidad reforzada
+        self.translate(300, 400)
         self.rotate(45)
-        self.drawString(200, 100, "Consulta respondida por Jurisconsultor")
+        self.drawCentredString(0, 0, "Consulta respondida por Jurisconsultor")
         self.restoreState()
         super().showPage()
 
@@ -57,6 +52,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             text_body = msg.get("text", {}).get("body", "")
             
             if text_body:
+                # Responde 200 OK inmediatamente a WhatsApp para detener los reintentos repetidos
                 background_tasks.add_task(procesar_y_enviar, from_number, text_body)
     except Exception as e:
         print(f"Error procesando webhook: {e}")
@@ -64,51 +60,58 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     return Response(content="OK", status_code=200)
 
 def procesar_y_enviar(to_number: str, consulta_usuario: str):
-    # Obtener respuesta del cuaderno
-    respuesta_texto = consultar_cuaderno_notebooklm(consulta_usuario)
+    respuesta_texto = generar_respuesta_fundamentada(consulta_usuario)
     
-    # Evaluar extensión de la respuesta
     if len(respuesta_texto) <= MAX_WHATSAPP_CHARS:
-        # Enviar directamente por mensaje de texto
         enviar_whatsapp_texto(to_number, respuesta_texto)
     else:
-        # Generar PDF con marca de agua y enviarlo como documento
         pdf_path = generar_pdf_respuesta(respuesta_texto, consulta_usuario)
         media_id = subir_documento_whatsapp(pdf_path)
         if media_id:
             enviar_whatsapp_documento(to_number, media_id, "Consulta_Juridica_Jurisconsultor.pdf")
-            enviar_whatsapp_texto(to_number, "Adjunto encontrarás el informe completo en formato PDF con la respuesta detallada a tu consulta.")
+            enviar_whatsapp_texto(
+                to_number, 
+                "📄 Adjunto encontrarás el informe jurídico completo en formato PDF con el análisis detallado.\n\n"
+                "💡 *¿Te gustaría que profundice en la jurisprudencia aplicable o que elabore un modelo/plantilla relacionado a este tema?*"
+            )
         else:
-            # Fallback en texto si falla la subida de media
             enviar_whatsapp_texto(to_number, respuesta_texto[:4000])
 
-def consultar_cuaderno_notebooklm(consulta_usuario: str) -> str:
-    """
-    Función para procesar la consulta contra el material del cuaderno.
-    """
+def generar_respuesta_fundamentada(consulta_usuario: str) -> str:
     try:
-        # Prompt enfocado en el rigor del Art. 134 CPRG y sentencias de la CC
+        # SYSTEM PROMPT DE RIGOR JURÍDICO (Fijado estrictamente según tus parámetros)
         prompt_sistema = (
-            "Eres un consultor experto en derecho constitucional y parlamentario guatemalteco.\n"
-            "Responde a la consulta del usuario utilizando rigurosamente los criterios, leyes y jurisprudencia "
-            "del cuaderno de trabajo (Art. 134 CPRG, mayoría calificada de 2/3 partes, sentencias de la CC).\n"
-            "No incluyas explicaciones básicas del trámite legislativo (como ir a comisión o lectura de debates)."
+            "Eres el asistente de Jurisconsultor, experto en derecho constitucional y parlamentario de Guatemala.\n\n"
+            "REGLAS ESTRUCTURALES Y DE RIGOR JURÍDICO:\n"
+            "1. FUNDAMENTACIÓN OBLIGATORIA: Toda afirmación debe citar explícitamente el artículo, cuerpo legal "
+            "(CPRG, LOOL Decreto 63-94) y/o expediente/sentencia exacto de la Corte de Constitucionalidad.\n"
+            "2. CLÁUSULA DE ABSTENCIÓN: Si la consulta no puede responderse directamente con la normativa o criterios "
+            "constitucionales aplicables, el sistema NO DEBE ASUMIR NI ESPECULAR; debe indicar explícitamente: "
+            "\"La normativa analizada no contiene disposición específica sobre el punto...\".\n"
+            "3. AUDIENCIA EXPERTA: Omite explicaciones básicas del trámite legislativo ordinario (como que las iniciativas "
+            "se presentan o pasan a comisión). Centra el análisis estrictamente en el fondo sustantivo de la duda.\n"
+            "4. ESTRUCTURA FORENSE / TÉCNICA: Organiza la respuesta con Tesis del asunto, Análisis normativo aplicable, "
+            "Conclusión y Fuentes consultadas.\n"
+            "5. CIERRE INTERACTIVO: Concluye SIEMPRE proponiendo 1 o 2 preguntas de seguimiento o modelos prácticos para que el "
+            "usuario continúe iterando en el chat."
         )
 
+        # Se fija la temperatura en 0.1 para ceñir al modelo a la normativa sin especular
         response = anthropic_client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=2500,
+            temperature=0.1,
+            max_tokens=1800,
             system=prompt_sistema,
             messages=[{"role": "user", "content": consulta_usuario}]
         )
         return response.content[0].text
     except Exception as e:
-        print(f"Error en consulta: {e}")
-        return "Ocurrió un error al procesar la respuesta."
+        print(f"Error generando respuesta: {e}")
+        return "Disculpa, ocurrió un error al procesar tu consulta jurídica."
 
 def generar_pdf_respuesta(texto_respuesta: str, consulta: str) -> str:
     pdf_filename = "/tmp/respuesta_jurisconsultor.pdf"
-    doc = SimpleDocTemplate(pdf_filename, pagesize=letter, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
+    doc = SimpleDocTemplate(pdf_filename, pagesize=letter, rightMargin=40, leftMargin=40, topMargin=50, bottomMargin=50)
     
     styles = getSampleStyleSheet()
     titulo_style = ParagraphStyle('Titulo', parent=styles['Heading1'], fontSize=14, leading=18, spaceAfter=12)
@@ -119,11 +122,10 @@ def generar_pdf_respuesta(texto_respuesta: str, consulta: str) -> str:
         Spacer(1, 10),
         Paragraph(f"<b>Consulta:</b> {consulta}", body_style),
         Spacer(1, 15),
-        Paragraph("<b>Dictamen / Respuesta Fundamentada:</b>", body_style),
+        Paragraph("<b>Respuesta Fundamentada:</b>", body_style),
         Spacer(1, 10)
     ]
     
-    # Agregar párrafos
     for linea in texto_respuesta.split('\n'):
         if linea.strip():
             story.append(Paragraph(linea.strip(), body_style))
@@ -136,7 +138,7 @@ def subir_documento_whatsapp(filepath: str) -> str:
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/media"
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
     files = {
-        'file': ('respuesta.pdf', open(filepath, 'rb'), 'application/pdf'),
+        'file': ('Consulta_Juridica_Jurisconsultor.pdf', open(filepath, 'rb'), 'application/pdf'),
         'messaging_product': (None, 'whatsapp')
     }
     r = requests.post(url, headers=headers, files=files)
