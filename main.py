@@ -48,7 +48,7 @@ def generar_respuesta_claude(consulta_usuario: str) -> str:
             "Responde a las consultas de forma clara, profesional, precisa y bien fundamentada."
         )
         response = anthropic_client.messages.create(
-            model="claude-3-5-sonnet-latest",
+            model="claude-sonnet-4-6",
             max_tokens=800,
             system=prompt_sistema,
             messages=[{"role": "user", "content": consulta_usuario}]
