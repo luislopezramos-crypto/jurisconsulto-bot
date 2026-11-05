@@ -1,7 +1,11 @@
 import os
+import json
 import requests
 from fastapi import FastAPI, Request, Response, BackgroundTasks
 from anthropic import Anthropic
+from google.oauth2 import service_account
+from google.cloud import discoveryengine_v1 as discoveryengine
+
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -9,16 +13,28 @@ from reportlab.pdfgen import canvas
 
 app = FastAPI()
 
+# Variables de Entorno de Render
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "mi_token_de_verificacion")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
+GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID", "lucid-burner-468800-q7")
+DATA_STORE_ID = os.getenv("DATA_STORE_ID", "bibliotecaconstitucionalyparlamentaria_1788990201092")
+GCP_CREDS_JSON = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
 MAX_WHATSAPP_CHARS = 1400
 
+# Inicialización de credenciales de Google Cloud
+def obtener_cliente_busqueda():
+    if GCP_CREDS_JSON:
+        creds_dict = json.loads(GCP_CREDS_JSON)
+        credentials = service_account.Credentials.from_service_account_info(creds_dict)
+        return discoveryengine.SearchServiceClient(credentials=credentials)
+    return discoveryengine.SearchServiceClient()
+
 class WatermarkCanvas(canvas.Canvas):
-    """Marca de agua visible y centrada en cada página del PDF"""
     def showPage(self):
         self.saveState()
         self.setFont("Helvetica-Bold", 24)
@@ -57,9 +73,45 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         
     return Response(content="OK", status_code=200)
 
+def consultar_base_legal_gcp(query: str) -> str:
+    """Busca fragmentos relevantes en el Data Store de Google Cloud (Vertex AI Search)"""
+    try:
+        client = obtener_cliente_busqueda()
+        serving_config = client.serving_config_path(
+            project=GCP_PROJECT_ID,
+            location="global",
+            data_store=DATA_STORE_ID,
+            serving_config="default_search",
+        )
+        request = discoveryengine.SearchRequest(
+            serving_config=serving_config,
+            query=query,
+            page_size=5,
+        )
+        response = client.search(request)
+        
+        contexto_recuperado = []
+        for result in response.results:
+            data = result.document.derived_struct_data
+            snippets = data.get("snippets", [])
+            for s in snippets:
+                snippet_text = s.get("snippet", "")
+                if snippet_text:
+                    contexto_recuperado.append(snippet_text)
+                    
+        return "\n\n".join(contexto_recuperado)
+    except Exception as e:
+        print(f"Error consultando Data Store GCP: {e}")
+        return ""
+
 def procesar_y_enviar(to_number: str, consulta_usuario: str):
-    respuesta_texto = generar_respuesta_fundamentada(consulta_usuario)
+    # 1. Recuperar contexto legal dinámico de Google Drive / GCP
+    contexto_legal = consultar_base_legal_gcp(consulta_usuario)
     
+    # 2. Generar respuesta fundamentada con Claude
+    respuesta_texto = generar_respuesta_fundamentada(consulta_usuario, contexto_legal)
+    
+    # 3. Enviar por WhatsApp (Texto o PDF según extensión)
     if len(respuesta_texto) <= MAX_WHATSAPP_CHARS:
         enviar_whatsapp_texto(to_number, respuesta_texto)
     else:
@@ -75,20 +127,17 @@ def procesar_y_enviar(to_number: str, consulta_usuario: str):
         else:
             enviar_whatsapp_texto(to_number, respuesta_texto[:4000])
 
-def generar_respuesta_fundamentada(consulta_usuario: str) -> str:
+def generar_respuesta_fundamentada(consulta_usuario: str, contexto_legal: str) -> str:
     try:
         prompt_sistema = (
             "Eres el asistente de Jurisconsultor, experto en derecho constitucional y parlamentario de Guatemala.\n\n"
-            "REGLAS ESTRUCTURALES Y DE NEGOCIO:\n"
-            "1. CONSULTAS MÚLTIPLES: Si la pregunta del usuario abarca 2 o más aspectos (ej: qué son, cuál es el trámite, efectos), "
-            "RESPONDE DE INMEDIATO EL PRIMER ASPECTO con rigor sustantivo (citando artículos de la CPRG, LOOL Decreto 63-94 o sentencias de la CC).\n"
-            "2. CIERRE CLARO Y CONCRETO: Al finalizar la respuesta del primer punto, enumera los sub-temas restantes e instruye explícitamente al usuario "
-            "escribir el nombre o frase del tema que desea consultar (ejemplo: \"Para responder el siguiente punto, por favor escribe 'Trámite de presentación' o 'Efectos de la aprobación'\").\n"
-            "3. NÚMEROS SUELTOS O RESPUESTAS BREVES: Si el usuario envía un número o palabra clave breve, ofrece el menú de temas específicos "
-            "y pídele que escriba la frase completa del asunto a tratar.\n"
-            "4. CLÁUSULA DE ABSTENCIÓN: Si no hay normativa o jurisprudencia aplicable, indica explícitamente: "
-            "\"La normativa analizada no contiene disposición específica sobre el punto...\".\n"
-            "5. AUDIENCIA EXPERTA: Omite explicaciones de trámite legislativo básico."
+            "INSTRUCCIONES DE BASE DE CONOCIMIENTO (RAG):\n"
+            "1. Utiliza PRIMORDALMENTE el siguiente contexto extraído de la base legal oficial para responder la consulta.\n"
+            "2. Fundamenta tus respuestas con rigor técnico en los artículos y precedentes citados en el contexto.\n"
+            "3. FORMATO DE TEXTO: NO utilices tablas escritas en formato Markdown (con caracteres '|'). Usa viñetas claras.\n"
+            "4. CONSULTAS MÚLTIPLES: Si la pregunta abarca varios puntos, responde de inmediato el Primer Punto. Al final, enumera los temas pendientes e instruye al usuario a escribir la frase o título exacto del tema que desea consultar a continuación.\n"
+            "5. CLÁUSULA DE ABSTENCIÓN: Si el contexto proporcionado no contiene la solución ni existe base legal clara, indica: \"La normativa analizada no contiene disposición específica sobre el punto...\".\n\n"
+            f"--- CONTEXTO LEGAL RECUPERADO ---\n{contexto_legal if contexto_legal else 'No se recuperaron fragmentos directos.'}\n---------------------------------"
         )
 
         response = anthropic_client.messages.create(
@@ -121,7 +170,8 @@ def generar_pdf_respuesta(texto_respuesta: str, consulta: str) -> str:
     
     for linea in texto_respuesta.split('\n'):
         if linea.strip():
-            story.append(Paragraph(linea.strip(), body_style))
+            linea_limpia = linea.replace('#', '').strip()
+            story.append(Paragraph(linea_limpia, body_style))
             story.append(Spacer(1, 4))
             
     doc.build(story, canvasmaker=WatermarkCanvas)
