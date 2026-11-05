@@ -2,4 +2,4 @@ fastapi
 uvicorn
 requests
 anthropic
-google-genai
+reportlab
