@@ -81,7 +81,7 @@ def buscar_contexto_vertex(query_text: str) -> str:
 
 def generar_dictamen_con_claude(pregunta_usuario: str, contexto_documental: str) -> str:
     """
-    Sintetiza la respuesta jurídica utilizando Claude (Anthropic).
+    Sintetiza la respuesta jurídica utilizando la línea sugerida por Instinct.
     """
     if not ANTHROPIC_API_KEY:
         return "Error: No se encuentra configurada la variable ANTHROPIC_API_KEY en Render."
@@ -104,7 +104,7 @@ def generar_dictamen_con_claude(pregunta_usuario: str, contexto_documental: str)
 
     try:
         response = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-sonnet-4-6",
             max_tokens=1200,
             system=system_prompt,
             messages=[
@@ -173,7 +173,7 @@ async def recibir_mensaje(request: Request):
                 # 1. Recuperar contexto desde Vertex AI Search
                 contexto_legal = buscar_contexto_vertex(texto_usuario)
                 
-                # 2. Sintetizar dictamen con Claude 3.5 Sonnet
+                # 2. Sintetizar dictamen con el modelo configurado
                 dictamen = generar_dictamen_con_claude(texto_usuario, contexto_legal)
                 
                 # 3. Enviar respuesta por WhatsApp
