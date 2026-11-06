@@ -5,23 +5,9 @@ import requests
 from google.cloud import discoveryengine_v1 as discoveryengine
 from google.oauth2 import service_account
 
-# Inicializar aplicación FastAPI (ASGI app)
 app = FastAPI(title="Jurisconsulto Bot")
 
-# Configurar credenciales de Google Cloud desde la variable de entorno de Render
-gcp_creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
-credentials = None
-
-if gcp_creds_json:
-    try:
-        # Reemplazar saltos de línea literales escapados para reparar la clave RSA
-        gcp_creds_clean = gcp_creds_json.replace("\\n", "\n")
-        creds_dict = json.loads(gcp_creds_clean, strict=False)
-        credentials = service_account.Credentials.from_service_account_info(creds_dict)
-    except Exception as e:
-        print(f"Error al cargar credenciales de GCP: {e}")
-
-# Variables de entorno para Vertex AI y WhatsApp
+# Cargar credenciales directamente desde el Secret File de Render o variable de entorno
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "1788990201092")
 DATA_STORE_ID = os.environ.get("DATA_STORE_ID", "bibliotecaconstitucionalyparlamentaria_1788990201092")
 LOCATION = "global"
@@ -30,9 +16,26 @@ WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
 
+credentials = None
+SECRET_FILE_PATH = "/etc/secrets/gcp-key.json"
+
+if os.path.exists(SECRET_FILE_PATH):
+    try:
+        credentials = service_account.Credentials.from_service_account_file(SECRET_FILE_PATH)
+    except Exception as e:
+        print(f"Error al cargar archivo secreto GCP: {e}")
+else:
+    # Intento de lectura fallback desde variable de entorno
+    gcp_creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+    if gcp_creds_json:
+        try:
+            creds_dict = json.loads(gcp_creds_json, strict=False)
+            credentials = service_account.Credentials.from_service_account_info(creds_dict)
+        except Exception as e:
+            print(f"Error al cargar credenciales JSON: {e}")
+
 
 def consultar_vertex_search(query_text: str) -> str:
-    """Consulta el Data Store de Vertex AI Search y recupera los fragmentos legales."""
     try:
         client = discoveryengine.SearchServiceClient(credentials=credentials) if credentials else discoveryengine.SearchServiceClient()
         
@@ -54,15 +57,12 @@ def consultar_vertex_search(query_text: str) -> str:
         pasajes = []
         for result in response.results:
             derived_data = result.document.derived_struct_data
-            
-            # Intentar extraer extractive_segments
             extrapolations = derived_data.get("extractive_segments", [])
             for seg in extrapolations:
                 content = seg.get("content")
                 if content:
                     pasajes.append(content)
             
-            # Si no hay extractive_segments, intentar extraer snippets
             if not pasajes:
                 snippets = derived_data.get("snippets", [])
                 for snip in snippets:
@@ -81,9 +81,7 @@ def consultar_vertex_search(query_text: str) -> str:
 
 
 def enviar_mensaje_whatsapp(telefono: str, texto: str):
-    """Envía la respuesta al usuario a través de la API de WhatsApp Business."""
     if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID:
-        print("Faltan variables de WhatsApp Token o Phone Number ID")
         return
         
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
@@ -107,7 +105,6 @@ def home():
 
 @app.get("/webhook")
 def verificar_webhook(request: Request):
-    """Verificación de Webhook para WhatsApp Business API."""
     params = request.query_params
     mode = params.get("hub.mode")
     token = params.get("hub.verify_token")
@@ -118,4 +115,29 @@ def verificar_webhook(request: Request):
     return Response(content="Error de validación", status_code=403)
 
 
-app.post("/webhook")
+@app.post("/webhook")
+async def recibir_mensaje(request: Request):
+    try:
+        data = await request.json()
+        entry = data.get("entry", [])[0]
+        changes = entry.get("changes", [])[0]
+        value = changes.get("value", {})
+        messages = value.get("messages", [])
+        
+        if messages:
+            msg = messages[0]
+            remitente = msg.get("from")
+            texto_usuario = msg.get("text", {}).get("body", "")
+            
+            if texto_usuario:
+                contexto_legal = consultar_vertex_search(texto_usuario)
+                respuesta_final = (
+                    f"*Dictamen/Fundamentación Extraída:*\n\n"
+                    f"{contexto_legal}"
+                )
+                enviar_mensaje_whatsapp(remitente, respuesta_final)
+                
+    except Exception as e:
+        print(f"Error procesando webhook: {e}")
+        
+    return {"status": "success"}
