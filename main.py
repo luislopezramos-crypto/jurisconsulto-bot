@@ -118,4 +118,4 @@ def verificar_webhook(request: Request):
     return Response(content="Error de validación", status_code=403)
 
 
-@app.post("/webhook")
+app.post("/webhook")
