@@ -5,15 +5,18 @@ import requests
 from google.cloud import discoveryengine_v1 as discoveryengine
 from google.oauth2 import service_account
 
-# Inicializar aplicación FastAPI
+# Inicializar aplicación FastAPI (ASGI app)
 app = FastAPI(title="Jurisconsulto Bot")
 
 # Configurar credenciales de Google Cloud desde la variable de entorno de Render
 gcp_creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
 credentials = None
+
 if gcp_creds_json:
     try:
-        creds_dict = json.loads(gcp_creds_json)
+        # Reemplazar saltos de línea literales escapados para reparar la clave RSA
+        gcp_creds_clean = gcp_creds_json.replace("\\n", "\n")
+        creds_dict = json.loads(gcp_creds_clean, strict=False)
         credentials = service_account.Credentials.from_service_account_info(creds_dict)
     except Exception as e:
         print(f"Error al cargar credenciales de GCP: {e}")
@@ -26,7 +29,6 @@ LOCATION = "global"
 WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
 
 def consultar_vertex_search(query_text: str) -> str:
@@ -52,13 +54,15 @@ def consultar_vertex_search(query_text: str) -> str:
         pasajes = []
         for result in response.results:
             derived_data = result.document.derived_struct_data
+            
+            # Intentar extraer extractive_segments
             extrapolations = derived_data.get("extractive_segments", [])
             for seg in extrapolations:
                 content = seg.get("content")
                 if content:
                     pasajes.append(content)
             
-            # Si no hay extractive_segments, tomar snippets o snippet content
+            # Si no hay extractive_segments, intentar extraer snippets
             if not pasajes:
                 snippets = derived_data.get("snippets", [])
                 for snip in snippets:
@@ -67,7 +71,7 @@ def consultar_vertex_search(query_text: str) -> str:
                         pasajes.append(snippet_text)
 
         if not pasajes:
-            return "No se encontraron fragmentos relevantes en la base legal para esta consulta."
+            return "No se encontraron fragmentos específicos en la base legal para esta consulta."
             
         return "\n\n--- FRAGMENTO LEGAL ---\n\n".join(pasajes)
 
@@ -115,35 +119,3 @@ def verificar_webhook(request: Request):
 
 
 @app.post("/webhook")
-async def recibir_mensaje(request: Request):
-    """Procesamiento de mensajes entrantes de WhatsApp."""
-    data = await request.json()
-    
-    try:
-        entry = data.get("entry", [])[0]
-        changes = entry.get("changes", [])[0]
-        value = changes.get("value", {})
-        messages = value.get("messages", [])
-        
-        if messages:
-            msg = messages[0]
-            remitente = msg.get("from")
-            texto_usuario = msg.get("text", {}).get("body", "")
-            
-            if texto_usuario:
-                # 1. Buscar directamente en Vertex AI Search
-                contexto_legal = consultar_vertex_search(texto_usuario)
-                
-                # 2. Enviar respuesta preliminar o procesada
-                # (Se utiliza el contexto extraído directamente del Data Store de GCP)
-                respuesta_final = (
-                    f"**Dictamen/Fundamentación Extraída:**\n\n"
-                    f"{contexto_legal}"
-                )
-                
-                enviar_mensaje_whatsapp(remitente, respuesta_final)
-                
-    except Exception as e:
-        print(f"Error procesando webhook: {e}")
-        
-    return {"status": "success"}
