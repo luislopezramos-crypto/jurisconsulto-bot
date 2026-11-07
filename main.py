@@ -1,11 +1,15 @@
 import os
 import json
 import io
-from fastapi import FastAPI, Request, Response
+import re
+import html
+from fastapi import FastAPI, Request, Response, BackgroundTasks
 import requests
 from google.cloud import discoveryengine_v1 as discoveryengine
+from google.cloud import storage
 from google.oauth2 import service_account
 import anthropic
+from pypdf import PdfReader
 
 # Librerías para generación de PDF y Marca de Agua
 from reportlab.lib.pagesizes import letter
@@ -19,25 +23,34 @@ app = FastAPI(title="Jurisconsulto Bot")
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "1788990201092")
 DATA_STORE_ID = os.environ.get("DATA_STORE_ID", "bibliotecaconstitucionalyparlamentaria_1788990201092")
 LOCATION = "global"
+GCS_BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME")
 
 WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
-# Cargar credenciales de GCP desde Secret File
 credentials = None
 SECRET_FILE_PATH = "/etc/secrets/gcp-key.json"
 
+# Validar credenciales de GCP al inicio
 if os.path.exists(SECRET_FILE_PATH):
     try:
         credentials = service_account.Credentials.from_service_account_file(SECRET_FILE_PATH)
     except Exception as e:
-        print(f"Error al cargar archivo secreto GCP: {e}")
+        print(f"Error al cargar archivo secreto GCP desde {SECRET_FILE_PATH}: {e}")
+else:
+    gcp_creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+    if gcp_creds_json:
+        try:
+            creds_clean = gcp_creds_json.replace("\\n", "\n")
+            creds_dict = json.loads(creds_clean, strict=False)
+            credentials = service_account.Credentials.from_service_account_info(creds_dict)
+        except Exception as e:
+            print(f"Error al cargar credenciales JSON de entorno: {e}")
 
 
 class NumberedCanvas(canvas.Canvas):
-    """Canvas personalizado para dibujar la marca de agua 'Respuesta dada por Jurisconsulto'"""
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._saved_page_states = []
@@ -47,7 +60,6 @@ class NumberedCanvas(canvas.Canvas):
         self._startPage()
 
     def save(self):
-        num_pages = len(self._saved_page_states)
         for state in self._saved_page_states:
             self.__dict__.update(state)
             self.draw_watermark()
@@ -56,27 +68,33 @@ class NumberedCanvas(canvas.Canvas):
 
     def draw_watermark(self):
         self.saveState()
-        self.setFont("Helvetica-Bold", 32)
-        self.setFillColorRGB(0.85, 0.85, 0.85, alpha=0.4)  # Color gris tenue transparente
+        self.setFont("Helvetica-Bold", 30)
+        self.setFillColorRGB(0.85, 0.85, 0.85, alpha=0.4)
         self.translate(300, 400)
         self.rotate(45)
         self.drawCentredString(0, 0, "Respuesta dada por Jurisconsulto")
         self.restoreState()
 
 
+def preparar_texto_para_reportlab(texto: str) -> str:
+    """Remueve emojis y escapa entidades HTML (<, >, &) para que ReportLab no rompa la generación."""
+    texto_sin_emojis = re.sub(r'[\U00010000-\U0010FFFF]', '', texto)
+    return html.escape(texto_sin_emojis)
+
+
 def crear_pdf_dictamen(texto_dictamen: str) -> bytes:
-    """Genera un archivo PDF en memoria con el texto del dictamen y la marca de agua."""
+    """Genera un PDF limpio y seguro con marca de agua."""
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=40, leftMargin=40, topMargin=50, bottomMargin=50)
-    
     styles = getSampleStyleSheet()
     style_body = ParagraphStyle('BodyTextCustom', parent=styles['Normal'], fontSize=11, leading=15, spaceAfter=10)
     
     story = []
-    lineas = texto_dictamen.split("\n")
-    for linea in lineas:
-        if linea.strip():
-            story.append(Paragraph(linea, style_body))
+    for linea in texto_dictamen.split("\n"):
+        linea_limpia = linea.strip()
+        if linea_limpia:
+            linea_escapada = preparar_texto_para_reportlab(linea_limpia)
+            story.append(Paragraph(linea_escapada, style_body))
         else:
             story.append(Spacer(1, 8))
             
@@ -85,7 +103,8 @@ def crear_pdf_dictamen(texto_dictamen: str) -> bytes:
     return buffer.getvalue()
 
 
-def buscar_contexto_vertex(query_text: str) -> str:
+def identificar_documentos_en_vertex(query_text: str) -> list:
+    """Obtiene las URIs de los documentos principales en Vertex AI Search."""
     try:
         client = discoveryengine.SearchServiceClient(credentials=credentials) if credentials else discoveryengine.SearchServiceClient()
         
@@ -99,59 +118,110 @@ def buscar_contexto_vertex(query_text: str) -> str:
         request = discoveryengine.SearchRequest(
             serving_config=serving_config,
             query=query_text,
-            page_size=10,
+            page_size=5,
         )
         
         response = client.search(request)
-        fragmentos = []
+        documentos_uris = []
+        
         for result in response.results:
             derived_data = result.document.derived_struct_data
-            extrapolations = derived_data.get("extractive_segments", [])
-            for seg in extrapolations:
-                if seg.get("content"):
-                    fragmentos.append(seg.get("content"))
-            if not extrapolations:
-                snippets = derived_data.get("snippets", [])
-                for snip in snippets:
-                    if snip.get("snippet"):
-                        fragmentos.append(snip.get("snippet"))
-
-        return "\n\n".join(fragmentos)
+            doc_link = derived_data.get("link") or derived_data.get("gcs_uri") or ""
+            if doc_link:
+                documentos_uris.append(doc_link)
+                
+        return documentos_uris
     except Exception as e:
-        print(f"Error recuperando datos de Vertex AI Search: {e}")
+        print(f"Error identificando documentos en Vertex: {e}")
+        return []
+
+
+def extraer_texto_pdf_gcs(uri_gcs: str) -> str:
+    """Descarga el PDF de GCS y extrae su texto. Advierte si es un PDF escaneado sin capa de texto."""
+    try:
+        storage_client = storage.Client(credentials=credentials)
+        
+        if uri_gcs.startswith("gs://"):
+            partes = uri_gcs.replace("gs://", "").split("/", 1)
+            bucket_name = partes[0]
+            blob_path = partes[1] if len(partes) > 1 else ""
+        else:
+            bucket_name = GCS_BUCKET_NAME
+            blob_path = uri_gcs
+
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(blob_path)
+        
+        pdf_bytes = blob.download_as_bytes()
+        pdf_file = io.BytesIO(pdf_bytes)
+        reader = PdfReader(pdf_file)
+        
+        texto_extraido = []
+        for page in reader.pages:
+            t = page.extract_text()
+            if t:
+                texto_extraido.append(t)
+                
+        resultado_final = "\n".join(texto_extraido).strip()
+        
+        if not resultado_final:
+            print(f"⚠️ ADVERTENCIA: El documento '{uri_gcs}' parece ser un PDF escaneado sin capa de texto seleccionable.")
+            
+        return resultado_final
+    except Exception as e:
+        print(f"Error extrayendo texto del PDF ({uri_gcs}): {e}")
         return ""
 
 
-def generar_dictamen_con_claude(pregunta_usuario: str, contexto_documental: str) -> str:
+def recargar_contexto_por_articulos(texto: str, limite_max: int) -> str:
+    """Corta respetando párrafos y estructuras de artículos para no truncar la norma a la mitad."""
+    if len(texto) <= limite_max:
+        return texto
+    
+    corte_parrafo = texto[:limite_max].rfind("\n\n")
+    if corte_parrafo != -1:
+        return texto[:corte_parrafo]
+    
+    corte_linea = texto[:limite_max].rfind("\n")
+    if corte_linea != -1:
+        return texto[:corte_linea]
+        
+    return texto[:limite_max]
+
+
+def generar_dictamen_con_claude(pregunta_usuario: str, contexto_documental_completo: str) -> str:
     if not ANTHROPIC_API_KEY:
         return "Error: No se encuentra configurada la variable ANTHROPIC_API_KEY en Render."
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     
-    # Prompt de sistema incorporando las reglas de enfoque y sugerencia temática
     system_prompt = (
-        "Eres 'Jurisconsulto', un consultor experto en Derecho Constitucional y Parlamentario guatemalteco. "
-        "REGLAS ESTRUCTURALES DE RESPUESTA:\n"
-        "1. Si el usuario realiza varias preguntas en un solo mensaje, CONCÉNTRATE EXCLUSIVAMENTE en responder a profundidad la PREGUNTA ESENCIAL o motivo principal de la consulta.\n"
-        "2. Para las preguntas secundarias u opcionales, indícale al usuario que puede decidir explorarlas en sus siguientes consultas.\n"
-        "3. Al finalizar tu respuesta, sugiere 2 o 3 temáticas o aspectos legales relacionados que el usuario podría consultar a continuación.\n"
-        "4. Mantén la síntesis fluida, analítica y técnicamente impecable basada en el contexto normativo provisto, sin advertencias ni justificaciones."
+        "Eres 'Jurisconsulto', un consultor experto en Derecho Constitucional y Parlamentario guatemalteco.\n\n"
+        "REGLAS ESTRUCTURALES Y RIGOR DE ANÁLISIS JURÍDICO:\n"
+        "1. RESPONDE BASÁNDOTE EXCLUSIVAMENTE EN EL TEXTO DOCUMENTAL PROVISTO EN LA BASE DE REFERENCIA.\n"
+        "2. CITA DE FORMA EXPLÍCITA Y OBLIGATORIA:\n"
+        "   a) Artículos, numerales e incisos del marco normativo aplicable.\n"
+        "   b) Jurisprudencia y doctrinas de la Corte de Constitucionalidad identificadas en los archivos.\n"
+        "   c) Precedentes parlamentarios, dictámenes de comisión y acuerdos legislativos relevantes.\n"
+        "   d) Otras normas o cuerpos legales concordantes y relacionados presentes en la documentación.\n"
+        "3. Si la consulta abarca múltiples interrogantes, concéntrate de forma exhaustiva en la PREGUNTA ESENCIAL o motivo principal, "
+        "dejando las secundarias planteadas para que el usuario las profundice a su elección.\n"
+        "4. No incluyas advertencias genéricas de búsqueda ni justificaciones sobre la herramienta.\n"
+        "5. Finaliza proponiendo únicamente UNA temática o pregunta de seguimiento guiada con el icono 🔍."
     )
 
     prompt = (
-        f"BASE DOCUMENTAL DE REFERENCIA:\n{contexto_documental}\n\n"
+        f"TEXTO ÍNTEGRO Y DOCUMENTACIÓN DE REFERENCIA SELECCIONADA:\n{contexto_documental_completo}\n\n"
         f"CONSULTA DEL USUARIO:\n{pregunta_usuario}\n\n"
-        f"Dictamen jurídico:"
+        f"Dictamen:"
     )
 
     try:
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=2000,
+            max_tokens=3000,
             system=system_prompt,
-            messages=[
-                {"role": "user", "content": prompt}
-            ]
+            messages=[{"role": "user", "content": prompt}]
         )
         return response.content[0].text
     except Exception as e:
@@ -164,46 +234,75 @@ def enviar_mensaje_whatsapp(telefono: str, texto: str):
         return
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": telefono,
-        "type": "text",
-        "text": {"body": texto}
-    }
+    payload = {"messaging_product": "whatsapp", "to": telefono, "type": "text", "text": {"body": texto}}
     requests.post(url, json=payload, headers=headers)
 
 
 def enviar_documento_whatsapp(telefono: str, pdf_bytes: bytes, filename: str, caption: str):
-    """Sube el PDF a la API de WhatsApp y lo envía como documento adjunto."""
     if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID:
         return
-        
-    # 1. Subir archivo a la API de Meta
     media_url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/media"
     headers_media = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
-    files = {
-        'file': (filename, pdf_bytes, 'application/pdf'),
-        'messaging_product': (None, 'whatsapp')
-    }
+    files = {'file': (filename, pdf_bytes, 'application/pdf'), 'messaging_product': (None, 'whatsapp')}
     res = requests.post(media_url, headers=headers_media, files=files)
     
     if res.status_code == 200:
         media_id = res.json().get("id")
-        
-        # 2. Enviar el mensaje con el documento adjunto
         messages_url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
         headers_msg = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
         payload = {
             "messaging_product": "whatsapp",
             "to": telefono,
             "type": "document",
-            "document": {
-                "id": media_id,
-                "filename": filename,
-                "caption": caption
-            }
+            "document": {"id": media_id, "filename": filename, "caption": caption}
         }
         requests.post(messages_url, json=payload, headers=headers_msg)
+
+
+def procesar_mensaje_en_segundo_plano(remitente: str, texto_usuario: str):
+    try:
+        # Validación explícita de credenciales de infraestructura antes de intentar la búsqueda
+        if not credentials:
+            msg_creds = "Error de configuración: No se pudieron validar las credenciales del sistema GCP en Render. Por favor verifique el archivo de secretos."
+            enviar_mensaje_whatsapp(remitente, msg_creds)
+            return
+
+        uris = identificar_documentos_en_vertex(texto_usuario)
+        contextos = []
+        caracteres_totales = 0
+        LIMITE_MAX_CARACTERES = 500000  # Presupuesto amplio para aprovechar los tokens de Sonnet 4.6
+
+        for uri in uris:
+            txt = extraer_texto_pdf_gcs(uri)
+            if txt:
+                if caracteres_totales + len(txt) > LIMITE_MAX_CARACTERES:
+                    espacio_restante = LIMITE_MAX_CARACTERES - caracteres_totales
+                    txt_recortado = recargar_contexto_por_articulos(txt, espacio_restante)
+                    contextos.append(txt_recortado)
+                    break
+                else:
+                    contextos.append(txt)
+                    caracteres_totales += len(txt)
+
+        if not contextos:
+            msg_vacio = "Estimado usuario, no se localizaron fuentes documentales específicas en la biblioteca legal para responder su consulta con el rigor técnico requerido."
+            enviar_mensaje_whatsapp(remitente, msg_vacio)
+            return
+
+        contexto_completo = "\n\n=== DOCUMENTO DE REFERENCIA ===\n\n".join(contextos)
+        dictamen = generar_dictamen_con_claude(texto_usuario, contexto_completo)
+        
+        if len(dictamen) > 1500:
+            pdf_bytes = crear_pdf_dictamen(dictamen)
+            caption_msg = "Se adjunta el dictamen jurídico completo en formato PDF con la marca oficial de Jurisconsulto."
+            enviar_documento_whatsapp(remitente, pdf_bytes, "Dictamen_Jurisconsulto.pdf", caption_msg)
+        else:
+            enviar_mensaje_whatsapp(remitente, dictamen)
+            
+    except Exception as e:
+        print(f"Error procesando dictamen: {e}")
+        msg_error = "Ocurrió un inconveniente técnico al procesar su solicitud. Por favor, reintente en unos momentos."
+        enviar_mensaje_whatsapp(remitente, msg_error)
 
 
 @app.get("/")
@@ -214,41 +313,23 @@ def home():
 @app.get("/webhook")
 def verificar_webhook(request: Request):
     params = request.query_params
-    mode = params.get("hub.mode")
-    token = params.get("hub.verify_token")
-    challenge = params.get("hub.challenge")
-    if mode == "subscribe" and token == VERIFY_TOKEN:
-        return Response(content=challenge, status_code=200)
+    if params.get("hub.mode") == "subscribe" and params.get("hub.verify_token") == VERIFY_TOKEN:
+        return Response(content=params.get("hub.challenge"), status_code=200)
     return Response(content="Error de validación", status_code=403)
 
 
 @app.post("/webhook")
-async def recibir_mensaje(request: Request):
+async def recibir_mensaje(request: Request, background_tasks: BackgroundTasks):
     try:
         data = await request.json()
-        entry = data.get("entry", [])[0]
-        changes = entry.get("changes", [])[0]
-        value = changes.get("value", {})
-        messages = value.get("messages", [])
-        
+        messages = data.get("entry", [])[0].get("changes", [])[0].get("value", {}).get("messages", [])
         if messages:
             msg = messages[0]
             remitente = msg.get("from")
             texto_usuario = msg.get("text", {}).get("body", "")
-            
             if texto_usuario:
-                contexto_legal = buscar_contexto_vertex(texto_usuario)
-                dictamen = generar_dictamen_con_claude(texto_usuario, contexto_legal)
-                
-                # Evaluar extensión del mensaje (Límite de WhatsApp: ~1500 caracteres para texto cómodo)
-                if len(dictamen) > 1500:
-                    pdf_bytes = crear_pdf_dictamen(dictamen)
-                    caption_msg = "Estimado usuario, el dictamen legal excede la extensión de texto estándar. Se adjunta el informe completo en formato PDF con las marcas oficiales."
-                    enviar_documento_whatsapp(remitente, pdf_bytes, "Dictamen_Jurisconsulto.pdf", caption_msg)
-                else:
-                    enviar_mensaje_whatsapp(remitente, dictamen)
-                
+                background_tasks.add_task(procesar_mensaje_en_segundo_plano, remitente, texto_usuario)
     except Exception as e:
-        print(f"Error procesando webhook: {e}")
+        print(f"Error en webhook: {e}")
         
-    return {"status": "success"}
+    return Response(content="EVENT_RECEIVED", status_code=200)
