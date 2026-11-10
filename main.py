@@ -78,7 +78,7 @@ class NumberedCanvas(canvas.Canvas):
 
 
 def preparar_texto_para_reportlab(texto: str) -> str:
-    """Remueve emojis e inconos no tipográficos y escapa entidades HTML (<, >, &) para ReportLab."""
+    """Remueve emojis e iconos no tipográficos y escapa entidades HTML (<, >, &) para ReportLab."""
     texto_sin_emojis = re.sub(r'[\U00010000-\U0010FFFF]', '', texto)
     return html.escape(texto_sin_emojis)
 
@@ -206,9 +206,137 @@ def generar_dictamen_con_claude(pregunta_usuario: str, contexto_documental_compl
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     
-    system_prompt = (
-        "Eres 'Jurisconsulto', un consultor y analista experto en Derecho Constitucional y Parlamentario guatemalteco.\n\n"
-        "REGLAS ESTRUCTURALES Y RIGOR DE ANÁLISIS JURÍDICO MANDATORIAS:\n"
-        "1. RESPONDE BASÁNDOTE EXCLUSIVAMENTE EN EL TEXTO DOCUMENTAL PROVISTO EN LA BASE DE REFERENCIA.\n"
-        "2. TU DICTAMEN DEBE DIVIDIRSE Y CITAR OBLIGATORIAMENTE TRES EJES DE FUNDAMENTACIÓN:\n"
-        "   A) MARCO NORMATIVO APLICABLE: Cita explícita de artículos, numerales e
+    system_prompt = """Eres 'Jurisconsulto', un consultor y analista experto en Derecho Constitucional y Parlamentario guatemalteco.
+
+REGLAS ESTRUCTURALES Y RIGOR DE ANÁLISIS JURÍDICO MANDATORIAS:
+1. RESPONDE BASÁNDOTE EXCLUSIVAMENTE EN EL TEXTO DOCUMENTAL PROVISTO EN LA BASE DE REFERENCIA.
+2. TU DICTAMEN DEBE DIVIDIRSE Y CITAR OBLIGATORIAMENTE TRES EJES DE FUNDAMENTACIÓN:
+   A) MARCO NORMATIVO APLICABLE: Cita explícita de artículos, numerales e incisos (CPRG, LOOL, etc.).
+   B) JURISPRUDENCIA Y DOCTRINA DE LA CORTE DE CONSTITUCIONALIDAD: Cita explícita y obligatoria de NÚMEROS DE EXPEDIENTE, SENTENCIAS, GACETAS o criterios doctrinales de la CC presentes en los archivos.
+   C) PRECEDENTES PARLAMENTARIOS Y DICTÁMENES: Cita explícita de los precedentes del Congreso (ej. Precedente 1-2017, 2-2017) y acuerdos legislativos relacionados.
+3. Si la base documental provista contiene resoluciones, gacetas o expedientes de la CC sobre el tema, ES MANDATORIO INTEGRARLOS Y CITARLOS dentro del análisis.
+4. No incluyas advertencias genéricas sobre la búsqueda ni justificaciones sobre la herramienta.
+5. Finaliza proponiendo únicamente UNA temática o pregunta de seguimiento guiada con el icono 🔍."""
+
+    prompt = (
+        f"DOCUMENTACIÓN NORMATIVA Y JURISPRUDENCIAL DE REFERENCIA SELECCIONADA:\n{contexto_documental_completo}\n\n"
+        f"CONSULTA DEL USUARIO:\n{pregunta_usuario}\n\n"
+        f"Dictamen Jurídico Integrado:"
+    )
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=3500,
+            system=system_prompt,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.content[0].text
+    except Exception as e:
+        print(f"Error al generar dictamen con Anthropic: {e}")
+        return f"Error al procesar la respuesta jurídica: {str(e)}"
+
+
+def enviar_mensaje_whatsapp(telefono: str, texto: str):
+    if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID:
+        return
+    url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
+    payload = {"messaging_product": "whatsapp", "to": telefono, "type": "text", "text": {"body": texto}}
+    requests.post(url, json=payload, headers=headers)
+
+
+def enviar_documento_whatsapp(telefono: str, pdf_bytes: bytes, filename: str, caption: str):
+    if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID:
+        return
+    media_url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/media"
+    headers_media = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+    files = {'file': (filename, pdf_bytes, 'application/pdf'), 'messaging_product': (None, 'whatsapp')}
+    res = requests.post(media_url, headers=headers_media, files=files)
+    
+    if res.status_code == 200:
+        media_id = res.json().get("id")
+        messages_url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
+        headers_msg = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": telefono,
+            "type": "document",
+            "document": {"id": media_id, "filename": filename, "caption": caption}
+        }
+        requests.post(messages_url, json=payload, headers=headers_msg)
+
+
+def procesar_mensaje_en_segundo_plano(remitente: str, texto_usuario: str):
+    try:
+        if not credentials:
+            msg_creds = "Error de configuración: No se pudieron cargar las credenciales de GCP en Render. Verifique el archivo de secretos."
+            enviar_mensaje_whatsapp(remitente, msg_creds)
+            return
+
+        uris = identificar_documentos_en_vertex(texto_usuario)
+        contextos = []
+        caracteres_totales = 0
+        LIMITE_MAX_CARACTERES = 500000  # Presupuesto de ~125,000 tokens para Sonnet 4.6
+
+        for uri in uris:
+            txt = extraer_texto_pdf_gcs(uri)
+            if txt:
+                if caracteres_totales + len(txt) > LIMITE_MAX_CARACTERES:
+                    espacio_restante = LIMITE_MAX_CARACTERES - caracteres_totales
+                    txt_recortado = recortar_contexto_por_articulos(txt, espacio_restante)
+                    contextos.append(txt_recortado)
+                    break
+                else:
+                    contextos.append(txt)
+                    caracteres_totales += len(txt)
+
+        if not contextos:
+            msg_vacio = "Estimado usuario, no se localizaron fuentes documentales específicas en la biblioteca legal para responder su consulta con el rigor técnico requerido."
+            enviar_mensaje_whatsapp(remitente, msg_vacio)
+            return
+
+        contexto_completo = "\n\n=== DOCUMENTO DE REFERENCIA SELECCIONADO ===\n\n".join(contextos)
+        dictamen = generar_dictamen_con_claude(texto_usuario, contexto_completo)
+        
+        if len(dictamen) > 1500:
+            pdf_bytes = crear_pdf_dictamen(dictamen)
+            caption_msg = "Se adjunta el dictamen jurídico completo en formato PDF con la marca oficial de Jurisconsulto."
+            enviar_documento_whatsapp(remitente, pdf_bytes, "Dictamen_Jurisconsulto.pdf", caption_msg)
+        else:
+            enviar_mensaje_whatsapp(remitente, dictamen)
+            
+    except Exception as e:
+        print(f"Error procesando dictamen: {e}")
+        msg_error = "Ocurrió un inconveniente técnico al procesar su solicitud. Por favor, reintente en unos momentos."
+        enviar_mensaje_whatsapp(remitente, msg_error)
+
+
+@app.get("/")
+def home():
+    return {"status": "ok", "service": "Jurisconsulto Bot API"}
+
+
+@app.get("/webhook")
+def verificar_webhook(request: Request):
+    params = request.query_params
+    if params.get("hub.mode") == "subscribe" and params.get("hub.verify_token") == VERIFY_TOKEN:
+        return Response(content=params.get("hub.challenge"), status_code=200)
+    return Response(content="Error de validación", status_code=403)
+
+
+@app.post("/webhook")
+async def recibir_mensaje(request: Request, background_tasks: BackgroundTasks):
+    try:
+        data = await request.json()
+        messages = data.get("entry", [])[0].get("changes", [])[0].get("value", {}).get("messages", [])
+        if messages:
+            msg = messages[0]
+            remitente = msg.get("from")
+            texto_usuario = msg.get("text", {}).get("body", "")
+            if texto_usuario:
+                background_tasks.add_task(procesar_mensaje_en_segundo_plano, remitente, texto_usuario)
+    except Exception as e:
+        print(f"Error en webhook: {e}")
+        
+    return Response(content="EVENT_RECEIVED", status_code=200)
